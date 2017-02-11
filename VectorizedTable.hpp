@@ -54,7 +54,6 @@ public:
 
   ~VectorizedTable()
   {
-    // Would just be faster to leak &| segfault
     delete[] m_valueHeap;
     _mm_free(m_mm_keyHeap);
     _mm_free(m_mm_statesHeap);
@@ -103,6 +102,7 @@ public:
 
   void clear()
   {
+    m_size = 0;
     memset(m_mm_keyHeap, 0, m_capacity * sizeof(int));
     memset(m_mm_statesHeap, 0, m_capacity * sizeof(int));
   }
@@ -226,7 +226,6 @@ private:
     int oldCapacity = m_capacity;
 
     // Creating all of the objects
-    m_size = 0;
     m_capacity = capacity;
     m_valueHeap = new Value[m_capacity];
     m_mm_keyHeap = (int*)_mm_malloc(m_capacity * sizeof(*m_mm_keyHeap), AVXAlignment);
