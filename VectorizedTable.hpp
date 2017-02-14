@@ -47,7 +47,6 @@ public:
   {
     m_valueHeap = nullptr;
     m_mm_keyHeap = nullptr;
-    m_mm_statesHeap = nullptr;
 
     grow(MinCapacity);
   }
@@ -56,7 +55,6 @@ public:
   {
     delete[] m_valueHeap;
     _mm_free(m_mm_keyHeap);
-    _mm_free(m_mm_statesHeap);
   }
 
 
@@ -103,8 +101,7 @@ public:
   void clear()
   {
     m_size = 0;
-    memset(m_mm_keyHeap, 0, m_capacity * sizeof(int));
-    memset(m_mm_statesHeap, 0, m_capacity * sizeof(int));
+    std::fill_n(m_mm_keyHeap, m_capacity, EmptySlot);
   }
 
   int size()
@@ -122,7 +119,7 @@ private:
     x = ((x >> 16) ^ x) * 0x45d9f3b;
     x = ((x >> 16) ^ x) * 0x45d9f3b;
     x = (x >> 16) ^ x;
-    return x;
+    return x & 0x7FFFFFFF;
   }
 
   Value& insert(int hashIndex, const Value& value)
@@ -133,14 +130,13 @@ private:
 
     int slot = openSlot(hashIndex);
     m_mm_keyHeap[slot] = hashIndex;
-    m_mm_statesHeap[slot] = BucketState::InUse;
     return m_valueHeap[slot] = value;
   }
 
   int openSlot(int hashedIndex) const
   {
     // Create an InUse mask to see if a bucket is full
-    const __m256i inuseMask = _m_256i_IntPack((int)BucketState::InUse);
+    const __m256i deadMask = _m_256i_IntPack(DeadSlot);
     int bucketId = ((hashedIndex  % m_capacity) / sizeof(__m256i) * sizeof(int)) / sizeof(int);
     const int bucketCount = m_capacity * sizeof(int) / sizeof(__m256i);
     const int bucketCountBits = bucketCount - 1;
@@ -148,10 +144,10 @@ private:
     while (true)
     {
       // life finding
-      const __m256i stateMask1 = _mm256_and_si256(byte1Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId], inuseMask));
-      const __m256i stateMask2 = _mm256_and_si256(byte2Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 1], inuseMask));
-      const __m256i stateMask3 = _mm256_and_si256(byte3Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 2], inuseMask));
-      const __m256i stateMask4 = _mm256_and_si256(byte4Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 3], inuseMask));
+      const __m256i stateMask1 = _mm256_and_si256(byte1Mask, _mm256_cmpgt_epi32(((__m256i*)m_mm_keyHeap)[bucketId], deadMask));
+      const __m256i stateMask2 = _mm256_and_si256(byte2Mask, _mm256_cmpgt_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 1], deadMask));
+      const __m256i stateMask3 = _mm256_and_si256(byte3Mask, _mm256_cmpgt_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 2], deadMask));
+      const __m256i stateMask4 = _mm256_and_si256(byte4Mask, _mm256_cmpgt_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 3], deadMask));
       const int stateMap = ~_mm256_movemask_epi8(_mm256_or_si256(_mm256_or_si256(_mm256_or_si256(stateMask1, stateMask2), stateMask3), stateMask4));
 
       unsigned long lowestIndex;
@@ -168,8 +164,7 @@ private:
   int slotOf(int hashedIndex) const
   {
     // Create an Empty mask to see if we can stop
-    const __m256i emptyMask = _m_256i_IntPack((int)BucketState::Empty);
-    const __m256i inuseMask = _m_256i_IntPack((int)BucketState::InUse);
+    const __m256i emptyMask = _m_256i_IntPack(EmptySlot);
     const __m256i indexMask = _m_256i_IntPack(hashedIndex);
 
     int bucketId = ((hashedIndex  % m_capacity) / sizeof(__m256i) * sizeof(int)) / sizeof(int);
@@ -184,19 +179,9 @@ private:
       const __m256i valueMask2 = _mm256_and_si256(byte2Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 1], indexMask));
       const __m256i valueMask3 = _mm256_and_si256(byte3Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 2], indexMask));
       const __m256i valueMask4 = _mm256_and_si256(byte4Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 3], indexMask));
-      
-      // life finding
-      const __m256i stateMask1 = _mm256_and_si256(byte1Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId], inuseMask));
-      const __m256i stateMask2 = _mm256_and_si256(byte2Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 1], inuseMask));
-      const __m256i stateMask3 = _mm256_and_si256(byte3Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 2], inuseMask));
-      const __m256i stateMask4 = _mm256_and_si256(byte4Mask, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 3], inuseMask));
 
       // Back to scaler mode
       int valueMap = _mm256_movemask_epi8(_mm256_or_si256(_mm256_or_si256(_mm256_or_si256(valueMask1, valueMask2), valueMask3), valueMask4));
-      const int stateMap = _mm256_movemask_epi8(_mm256_or_si256(_mm256_or_si256(_mm256_or_si256(stateMask1, stateMask2), stateMask3), stateMask4));
-
-      // Wipe empty cells
-      valueMap &= stateMap;
 
       unsigned long lowestIndex;
       const long foundValue = _BitScanForward(&lowestIndex, valueMap);
@@ -205,10 +190,10 @@ private:
         return (bucketId << 3) + ((lowestIndex & 3) << 3) + (lowestIndex >> 2);
 
       // Empty block found
-      __m256i empty = _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId], emptyMask);
-      empty = _mm256_or_si256(empty, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 1], emptyMask));
-      empty = _mm256_or_si256(empty, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 2], emptyMask));
-      empty = _mm256_or_si256(empty, _mm256_cmpeq_epi32(((__m256i*)m_mm_statesHeap)[bucketId + 3], emptyMask));
+      __m256i empty = _mm256_cmpeq_epi32(((__m256i*)m_mm_keyHeap)[bucketId], emptyMask);
+      empty = _mm256_or_si256(empty, _mm256_cmpeq_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 1], emptyMask));
+      empty = _mm256_or_si256(empty, _mm256_cmpeq_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 2], emptyMask));
+      empty = _mm256_or_si256(empty, _mm256_cmpeq_epi32(((__m256i*)m_mm_keyHeap)[bucketId + 3], emptyMask));
 
       if (_mm256_movemask_epi8(empty))
         return -1;
@@ -222,39 +207,31 @@ private:
     // Keep a reference to the old pointers
     Value* oldValueHeap = m_valueHeap;
     int* oldKeyHeap = m_mm_keyHeap;
-    BucketState* oldStatesHeap = m_mm_statesHeap;
     int oldCapacity = m_capacity;
 
     // Creating all of the objects
     m_capacity = capacity;
     m_valueHeap = new Value[m_capacity];
     m_mm_keyHeap = (int*)_mm_malloc(m_capacity * sizeof(*m_mm_keyHeap), AVXAlignment);
-    m_mm_statesHeap = (BucketState*)_mm_malloc(m_capacity * sizeof(*m_mm_statesHeap), AVXAlignment);
 
     clear();
 
-    if (oldStatesHeap)
+    if (oldKeyHeap)
     {
       for (int i = 0; i < oldCapacity; i++)
-        if (oldStatesHeap[i] == BucketState::InUse)
+        if (oldKeyHeap[i] > DeadSlot)
           insert(oldKeyHeap[i], oldValueHeap[i]);
 
       delete[] oldValueHeap;
       _mm_free(oldKeyHeap);
-      _mm_free(oldStatesHeap);
     }
   }
 
-  enum class BucketState : int
-  {
-    Empty = 0,
-    InUse = 1,
-    Dead = 2
-  };
+  const int EmptySlot = (int)0x80000000;
+  const int DeadSlot = (int)0x80000001;
 
   Value* m_valueHeap;
   int* m_mm_keyHeap;
-  BucketState* m_mm_statesHeap;
 
   int m_size;
   int m_capacity;
