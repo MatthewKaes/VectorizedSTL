@@ -68,6 +68,14 @@ public:
     return insert(hash(index), value);
   }
 
+  void erase(int index)
+  {
+    int slot = slotOf(hash(index));
+
+    if (slot != -1)
+      m_mm_keyHeap[slot] = DeadSlot;
+  }
+
   bool containsKey(int index) const
   {
     return slotOf(hash(index)) != -1;
